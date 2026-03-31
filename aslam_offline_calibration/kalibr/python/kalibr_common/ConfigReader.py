@@ -610,6 +610,9 @@ class CalibrationTargetParameters(ParametersBase):
             except KeyError as e:
                 self.raiseError("Calibration target configuration in {0} is missing the field: {1}".format(self.yamlFile, str(e)) )
             
+            # Optional parameter for subpixel refinement threshold
+            maxSubpixDisplacement2 = self.data.get("maxSubpixDisplacement2", 1.5)
+            
             if not isinstance(tagRows,int) or tagRows < 3:
                 errList.append("invalid tagRows (int>=3)")
             if not isinstance(tagCols,int) or tagCols < 3:
@@ -618,11 +621,14 @@ class CalibrationTargetParameters(ParametersBase):
                 errList.append("invalid tagSize (float)")
             if not isinstance(tagSpacing,float) or tagSpacing <= 0.0:
                 errList.append("invalid tagSpacing (float)")
+            if not isinstance(maxSubpixDisplacement2, (int, float)) or maxSubpixDisplacement2 <= 0.0:
+                errList.append("invalid maxSubpixDisplacement2 (float > 0)")
                 
             targetParams = {'tagRows': tagRows,
                             'tagCols': tagCols,
                             'tagSize': tagSize,
                             'tagSpacing': tagSpacing,
+                            'maxSubpixDisplacement2': maxSubpixDisplacement2,
                             'targetType': targetType}
             
         return targetParams
@@ -650,6 +656,8 @@ class CalibrationTargetParameters(ParametersBase):
             print("    Cols: {0}".format(targetParams['tagCols']), file=dest)
             print("    Size: {0} [m]".format(targetParams['tagSize']), file=dest)
             print("    Spacing {0} [m]".format( targetParams['tagSize']*targetParams['tagSpacing'] ), file=dest)
+            if 'maxSubpixDisplacement2' in targetParams:
+                print("    Max subpixel displacement: {0} [px^2]".format(targetParams['maxSubpixDisplacement2']), file=dest)
 
 
         

@@ -54,19 +54,49 @@ class CameraGeometry(object):
 
     def initGeometryFromObservations(self, observations):
         #obtain focal length guess
-        success = self.geometry.initializeIntrinsics(observations)
+        # Filter observations aggressively using the actual number of valid correspondences.
+        # Try progressively stricter thresholds and looser frame requirements
+        thresholds = [20, 15, 12, 10]
+        min_frames = [10, 8, 6, 5]
+        target_size = self.ctarget.detector.target().size()
+        valid_observations = None
+        success = False
+        
+        for threshold, min_frames_needed in zip(thresholds, min_frames):
+            valid_observations = [obs for obs in observations if kcc.observationValidPointCount(obs, target_size) > threshold]
+            
+            if len(valid_observations) < min_frames_needed:
+                sm.logDebug("Threshold {0} with min_frames {1}: only {2} frames available".format(
+                    threshold, min_frames_needed, len(valid_observations)))
+                continue
+            
+            try:
+                sm.logDebug("Trying initialization with {0} frames using threshold {1}".format(
+                    len(valid_observations), threshold))
+                success = self.geometry.initializeIntrinsics(valid_observations)
+                if success:
+                    sm.logDebug("Initialization succeeded with threshold {0}".format(threshold))
+                    break
+            except RuntimeError as e:
+                if "DLT algorithm needs at least 6 points" in str(e):
+                    sm.logDebug("Threshold {0} failed: {1}".format(threshold, str(e)))
+                    continue
+                else:
+                    raise
+        
         if not success:
-            sm.logError("initialization of focal length for cam with topic {0} failed  ".format(self.dataset.topic))
+            sm.logError("initialization of focal length for cam with topic {0} failed - insufficient quality observations".format(self.dataset.topic))
+            return False
         
         #in case of an omni model, first optimize over intrinsics only
         #(--> catch most of the distortion with the projection model)
         if self.model == acvb.DistortedOmni:
-            success = kcc.calibrateIntrinsics(self, observations, distortionActive=False)
+            success = kcc.calibrateIntrinsics(self, valid_observations, distortionActive=False)
             if not success:
                 sm.logError("initialization of intrinsics for cam with topic {0} failed  ".format(self.dataset.topic))
         
         #optimize for intrinsics & distortion    
-        success = kcc.calibrateIntrinsics(self, observations)
+        success = kcc.calibrateIntrinsics(self, valid_observations)
         if not success:
             sm.logError("initialization of intrinsics for cam with topic {0} failed  ".format(self.dataset.topic))
         
@@ -110,6 +140,9 @@ class TargetDetector(object):
             #enforce more than one row --> pnp solution can be bad if all points are almost on a line...
             options.minTagsForValidObs = int( np.max( [targetParams['tagRows'], targetParams['tagCols']] ) + 1 )
             options.showExtractionVideo = showCorners
+            # Set subpixel refinement threshold if specified
+            if 'maxSubpixDisplacement2' in targetParams:
+                options.maxSubpixDisplacement2 = targetParams['maxSubpixDisplacement2']
             
             self.grid = acv_april.GridCalibrationTargetAprilgrid(targetParams['tagRows'], 
                                                                  targetParams['tagCols'], 

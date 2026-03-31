@@ -3,6 +3,32 @@ import aslam_backend as aopt
 import aslam_cv as cv
 import numpy as np
 
+MIN_PNP_POINTS = 6
+
+
+def observationValidPointCount(obs, target_size):
+    valid_point_count = 0
+    for point_idx in range(0, target_size):
+        valid, _ = obs.imagePoint(point_idx)
+        if valid:
+            valid_point_count += 1
+    return valid_point_count
+
+
+def hasMinimumValidPoints(obs, target_size, min_points=MIN_PNP_POINTS):
+    return observationValidPointCount(obs, target_size) >= min_points
+
+
+def filterObservationsByValidPoints(obslist, target_size, min_points=MIN_PNP_POINTS):
+    filtered_observations = []
+    skipped_count = 0
+    for obs in obslist:
+        if hasMinimumValidPoints(obs, target_size, min_points=min_points):
+            filtered_observations.append(obs)
+        else:
+            skipped_count += 1
+    return filtered_observations, skipped_count
+
 def addPoseDesignVariable(problem, T0=sm.Transformation()):
     q_Dv = aopt.RotationQuaternionDv( T0.q() )
     q_Dv.setActive( True )
@@ -13,6 +39,29 @@ def addPoseDesignVariable(problem, T0=sm.Transformation()):
     return aopt.TransformationBasicDv( q_Dv.toExpression(), t_Dv.toExpression() )
 
 def stereoCalibrate(camL_geometry, camH_geometry, obslist, distortionActive=False, baseline=None):
+    target_size_L = camL_geometry.ctarget.detector.target().size()
+    target_size_H = camH_geometry.ctarget.detector.target().size()
+    filtered_obslist = []
+    skipped_pairs = 0
+    for obsL, obsH in obslist:
+        filtered_obsL = obsL if obsL is not None and hasMinimumValidPoints(obsL, target_size_L) else None
+        filtered_obsH = obsH if obsH is not None and hasMinimumValidPoints(obsH, target_size_H) else None
+        if filtered_obsL is None and filtered_obsH is None:
+            skipped_pairs += 1
+            continue
+        filtered_obslist.append((filtered_obsL, filtered_obsH))
+
+    if skipped_pairs > 0:
+        sm.logWarn("stereoCalibrate: skipped {0} observation pairs with fewer than {1} valid points".format(skipped_pairs, MIN_PNP_POINTS))
+
+    if len(filtered_obslist) == 0:
+        sm.logError("stereoCalibrate: no usable observation pairs remain after filtering")
+        if baseline is None:
+            return False, sm.Transformation()
+        return False, baseline
+
+    obslist = filtered_obslist
+
     #####################################################
     ## find initial guess as median of  all pnp solutions
     #####################################################
@@ -192,6 +241,14 @@ def calibrateIntrinsics(cam_geometry, obslist, distortionActive=True, intrinsics
         p = cam_geometry.geometry.projection().getParameters().flatten()
         sm.logDebug("calibrateIntrinsics: intrinsics guess: {0}".format(p))
         sm.logDebug("calibrateIntrinsics: distortion guess: {0}".format(d))
+
+    target = cam_geometry.ctarget.detector.target()
+    obslist, skipped_count = filterObservationsByValidPoints(obslist, target.size())
+    if skipped_count > 0:
+        sm.logWarn("calibrateIntrinsics: skipped {0} observations with fewer than {1} valid points".format(skipped_count, MIN_PNP_POINTS))
+    if len(obslist) == 0:
+        sm.logError("calibrateIntrinsics: no usable calibration target observations remain after filtering")
+        return False
     
     ############################################
     ## solve the bundle adjustment
@@ -208,9 +265,6 @@ def calibrateIntrinsics(cam_geometry, obslist, distortionActive=True, intrinsics
     cornerUncertainty = 1.0
     R = np.eye(2) * cornerUncertainty * cornerUncertainty
     invR = np.linalg.inv(R)
-    
-    #get the image and target points corresponding to the frame
-    target = cam_geometry.ctarget.detector.target()
     
     #target pose dv for all target views (=T_camL_w)
     reprojectionErrors = [];    

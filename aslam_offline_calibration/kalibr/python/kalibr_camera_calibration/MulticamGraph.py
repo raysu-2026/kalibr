@@ -236,19 +236,28 @@ class MulticamCalibrationGraph(object):
     def getTargetPoseGuess(self, timestamp, cameras, baselines_HL=[]):
         #go through all camera that see this target at the given time
         #and take the one with the most target points        
-        camids = list()
-        numcorners = list()
+        ranked_cameras = list()
         for cam_id in self.obs_db.getCamIdsAtTimestamp(timestamp):
-            camids.append(cam_id)
-            numcorners.append( len(self.obs_db.getCornerIdsAtTime(timestamp, cam_id)) )
+            ranked_cameras.append((len(self.obs_db.getCornerIdsAtTime(timestamp, cam_id)), cam_id))
 
-        #get the pnp solution of the cam that sees most target corners
-        max_idx = numcorners.index(max(numcorners))
-        cam_id_max = camids[max_idx]        
-        
-        #solve the pnp problem
-        camera_geomtry = cameras[cam_id_max].geometry
-        success, T_t_cN = camera_geomtry.estimateTransformation(self.obs_db.getObservationAtTime(timestamp, cam_id_max))
+        ranked_cameras.sort(reverse=True)
+
+        cam_id_max = None
+        T_t_cN = None
+        for _, cam_id in ranked_cameras:
+            camera = cameras[cam_id]
+            observation = self.obs_db.getObservationAtTime(timestamp, cam_id)
+            target_size = camera.ctarget.detector.target().size()
+            if not kcc.hasMinimumValidPoints(observation, target_size):
+                continue
+
+            success, T_t_cN = camera.geometry.estimateTransformation(observation)
+            if success:
+                cam_id_max = cam_id
+                break
+
+        if cam_id_max is None:
+            raise RuntimeError("getTargetPoseGuess: no usable observation with at least {0} valid points at timestamp {1}".format(kcc.MIN_PNP_POINTS, timestamp))
                
         if not success:
             sm.logWarn("getTargetPoseGuess: solvePnP failed with solution: {0}".format(T_t_cN))

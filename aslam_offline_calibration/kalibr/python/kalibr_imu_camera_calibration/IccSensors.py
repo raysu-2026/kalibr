@@ -98,6 +98,9 @@ class IccCamera():
             options = acv_april.AprilgridOptions() 
             options.showExtractionVideo = showExtraction
             options.minTagsForValidObs = int( np.max( [targetParams['tagRows'], targetParams['tagCols']] ) + 1 )
+            # Set subpixel refinement threshold if specified
+            if 'maxSubpixDisplacement2' in targetParams:
+                options.maxSubpixDisplacement2 = targetParams['maxSubpixDisplacement2']
             
             grid = acv_april.GridCalibrationTargetAprilgrid(targetParams['tagRows'],
                                                             targetParams['tagCols'], 
