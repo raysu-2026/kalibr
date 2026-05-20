@@ -363,15 +363,21 @@ def solveFullBatch(cameras, baseline_guesses, graph):
     target_pose_dvs = list()
       
     #shuffle the views
-    reprojectionErrors = [];    
+    reprojectionErrors = [];
+    skipped_timestamps = 0
     timestamps = graph.obs_db.getAllViewTimestamps()
     for view_id, timestamp in enumerate(timestamps):
-        
+
         #get all observations for all cams at this time
         obs_tuple = graph.obs_db.getAllObsAtTimestamp(timestamp)
 
         #create a target pose dv for all target views (= T_cam0_w)
-        T0 = graph.getTargetPoseGuess(timestamp, cameras, baseline_guesses)
+        try:
+            T0 = graph.getTargetPoseGuess(timestamp, cameras, baseline_guesses)
+        except RuntimeError as e:
+            sm.logWarn("solveFullBatch: skipping timestamp {0} ({1})".format(timestamp, e))
+            skipped_timestamps += 1
+            continue
         target_pose_dv = addPoseDesignVariable(problem, T0)
         target_pose_dvs.append(target_pose_dv)
         
@@ -397,8 +403,13 @@ def solveFullBatch(cameras, baseline_guesses, graph):
                     problem.addErrorTerm(rerr)
                     reprojectionErrors.append(rerr)
                                                     
+    if skipped_timestamps > 0:
+        sm.logWarn("solveFullBatch: skipped {0} timestamps with no usable pose guess".format(skipped_timestamps))
+    if len(reprojectionErrors) == 0:
+        sm.logError("solveFullBatch: no error terms added; cannot optimize")
+        return False, baseline_guesses
     sm.logDebug("solveFullBatch: added {0} camera error terms".format(len(reprojectionErrors)))
-    
+
     ############################################
     ## solve
     ############################################       

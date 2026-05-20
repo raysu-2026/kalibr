@@ -52,56 +52,106 @@ class CameraGeometry(object):
         self.dv.distortionDesignVariable().setActive(distortionActive)
         self.dv.shutterDesignVariable().setActive(shutterActice)
 
-    def initGeometryFromObservations(self, observations):
-        #obtain focal length guess
-        # Filter observations aggressively using the actual number of valid correspondences.
-        # Try progressively stricter thresholds and looser frame requirements
+    def initGeometryFromObservations(self, observations, seed_intrinsics=None):
+        """Initialize camera geometry from observations.
+
+        seed_intrinsics: optional dict with keys 'camera_model' and 'intrinsics'
+            in Kalibr camchain YAML format (e.g. from a previous calibration run).
+            When provided, it is used directly as the starting point for optimization,
+            skipping the automatic focal-length estimation entirely.
+        """
+        target_size = self.ctarget.detector.target().size()
         thresholds = [20, 15, 12, 10]
         min_frames = [10, 8, 6, 5]
-        target_size = self.ctarget.detector.target().size()
-        valid_observations = None
-        success = False
-        
+
+        # Always build valid_observations — needed by calibrateIntrinsics below.
+        valid_observations = observations
         for threshold, min_frames_needed in zip(thresholds, min_frames):
-            valid_observations = [obs for obs in observations if kcc.observationValidPointCount(obs, target_size) > threshold]
-            
-            if len(valid_observations) < min_frames_needed:
-                sm.logDebug("Threshold {0} with min_frames {1}: only {2} frames available".format(
-                    threshold, min_frames_needed, len(valid_observations)))
-                continue
-            
+            candidates = [obs for obs in observations if kcc.observationValidPointCount(obs, target_size) > threshold]
+            if len(candidates) >= min_frames_needed:
+                valid_observations = candidates
+                break
+
+        if seed_intrinsics is not None:
+            # Seed path: call initializeIntrinsics only to populate cu/cv/ru/rv from
+            # the actual image dimensions, then immediately overwrite with the seed.
             try:
-                sm.logDebug("Trying initialization with {0} frames using threshold {1}".format(
-                    len(valid_observations), threshold))
-                success = self.geometry.initializeIntrinsics(valid_observations)
-                if success:
-                    sm.logDebug("Initialization succeeded with threshold {0}".format(threshold))
-                    break
-            except RuntimeError as e:
-                if "DLT algorithm needs at least 6 points" in str(e):
-                    sm.logDebug("Threshold {0} failed: {1}".format(threshold, str(e)))
+                self.geometry.initializeIntrinsics(valid_observations)
+            except RuntimeError:
+                pass  # cu/cv/ru/rv are set before the focal-length step can fail
+            self._seedProjectionFromIntrinsics(seed_intrinsics)
+            success = True
+        else:
+            # Automatic path: try progressively looser thresholds.
+            success = False
+            for threshold, min_frames_needed in zip(thresholds, min_frames):
+                candidates = [obs for obs in observations if kcc.observationValidPointCount(obs, target_size) > threshold]
+                if len(candidates) < min_frames_needed:
+                    sm.logDebug("Threshold {0} with min_frames {1}: only {2} frames available".format(
+                        threshold, min_frames_needed, len(candidates)))
                     continue
-                else:
-                    raise
-        
-        if not success:
-            sm.logError("initialization of focal length for cam with topic {0} failed - insufficient quality observations".format(self.dataset.topic))
-            return False
-        
+                valid_observations = candidates
+                try:
+                    sm.logDebug("Trying initialization with {0} frames using threshold {1}".format(
+                        len(valid_observations), threshold))
+                    success = self.geometry.initializeIntrinsics(valid_observations)
+                    if success:
+                        sm.logDebug("Initialization succeeded with threshold {0}".format(threshold))
+                        break
+                except RuntimeError as e:
+                    if "DLT algorithm needs at least 6 points" in str(e):
+                        sm.logDebug("Threshold {0} failed: {1}".format(threshold, str(e)))
+                        continue
+                    else:
+                        raise
+
+            if not success:
+                sm.logError("initialization of focal length for cam with topic {0} failed - "
+                            "insufficient quality observations".format(self.dataset.topic))
+                return False
+
         #in case of an omni model, first optimize over intrinsics only
         #(--> catch most of the distortion with the projection model)
         if self.model == acvb.DistortedOmni:
             success = kcc.calibrateIntrinsics(self, valid_observations, distortionActive=False)
             if not success:
                 sm.logError("initialization of intrinsics for cam with topic {0} failed  ".format(self.dataset.topic))
-        
-        #optimize for intrinsics & distortion    
+
+        #optimize for intrinsics & distortion
         success = kcc.calibrateIntrinsics(self, valid_observations)
         if not success:
             sm.logError("initialization of intrinsics for cam with topic {0} failed  ".format(self.dataset.topic))
-        
-        self.isGeometryInitialized = success        
+
+        self.isGeometryInitialized = success
         return success
+
+    def _seedProjectionFromIntrinsics(self, seed_intrinsics):
+        """Apply seed intrinsics as starting point for optimization.
+
+        Copies the model parameters (xi, alpha, fu, fv, …) from the seed but
+        preserves the current camera's principal point (cu, cv), which was set
+        correctly by initializeIntrinsics even when focal-length estimation failed.
+
+        seed_intrinsics: dict with 'camera_model' and 'intrinsics' keys, matching
+            the per-camera entry in a Kalibr camchain YAML file.
+
+        Parameter layouts (all models: cu=params[-2], cv=params[-1]):
+            pinhole (4): [fu, fv, cu, cv]
+            omni    (5): [xi, fu, fv, cu, cv]
+            ds/eucm (6): [xi/alpha, alpha/beta, fu, fv, cu, cv]
+        """
+        import numpy as np
+        seed_params = np.array(seed_intrinsics['intrinsics'], dtype=float)
+        own_params   = self.geometry.projection().getParameters().flatten()
+
+        merged = seed_params.copy()
+        # merged[-2] = own_params[-2]  # cu — from current camera
+        # merged[-1] = own_params[-1]  # cv — from current camera
+
+        self.geometry.projection().setParameters(np.atleast_2d(merged).T)
+        sm.logInfo("initGeometryFromObservations: seeding cam '{0}' from provided intrinsics "
+                   "(fu={1:.1f}, fv={2:.1f}); calibration will optimize from this starting "
+                   "point.".format(self.dataset.topic, merged[-4], merged[-3]))
 
 class TargetDetector(object):
     def __init__(self, targetConfig, cameraGeometry, showCorners=False, showReproj=False, showOneStep=False):

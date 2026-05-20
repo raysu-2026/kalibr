@@ -97,6 +97,10 @@ def parseArgs():
     groupCalibrator.add_argument('--qr-tol', type=float, default=0.02, dest='qrTol', help='The tolerance on the factors of the QR decomposition (default: %(default)s)')
     groupCalibrator.add_argument('--mi-tol', type=float, default=0.2, dest='miTol', help='The tolerance on the mutual information for adding an image. Higher means fewer images will be added. Use -1 to force all images. (default: %(default)s)')
     groupCalibrator.add_argument('--no-shuffle', action='store_true', dest='noShuffle', help='Do not shuffle the dataset processing order')
+    groupCalibrator.add_argument('--seed-intrinsics', dest='seedIntrinsicsYaml', default=None,
+        help='Camchain YAML file from a previous calibration run (cam0/cam1/... keys). '
+             'Used as fallback initial intrinsics when automatic focal-length estimation '
+             'fails, e.g. for a blurry or low-contrast camera.')
     
     outlierSettings = parser.add_argument_group('Outlier filtering options')
     outlierSettings.add_argument('--no-outliers-removal', action='store_false', default=True, dest='removeOutliers', help='Disable corner outlier filtering')
@@ -154,6 +158,24 @@ def main():
 
     targetConfig = kc.CalibrationTargetParameters(parsed.targetYaml)
 
+    #load seed intrinsics if provided (camchain YAML: cam0/cam1/... keys)
+    seed_intrinsics_per_cam = {}
+    if parsed.seedIntrinsicsYaml:
+        import yaml as _yaml
+        try:
+            with open(parsed.seedIntrinsicsYaml, 'r') as _f:
+                _seed_data = _yaml.safe_load(_f)
+            for _key, _val in _seed_data.items():
+                if _key.startswith('cam') and 'intrinsics' in _val and 'camera_model' in _val:
+                    try:
+                        _idx = int(_key[3:])
+                        seed_intrinsics_per_cam[_idx] = _val
+                    except ValueError:
+                        pass
+            print("Loaded seed intrinsics for cameras: {0}".format(sorted(seed_intrinsics_per_cam.keys())))
+        except Exception as _e:
+            sm.logError("Failed to load --seed-intrinsics from {0}: {1}".format(parsed.seedIntrinsicsYaml, _e))
+
     #create camera objects, initialize the intrinsics and extract targets
     cameraList = list()
     numCams = len(parsed.topics)
@@ -184,8 +206,10 @@ def main():
             for obs in observations:
                 obsdb.addObservation(cam_id, obs)
 
-            #initialize the intrinsics
-            if not cam.initGeometryFromObservations(observations):
+            #initialize the intrinsics; use seed from a previous calibration YAML
+            #as fallback when automatic focal-length estimation fails (e.g. blurry camera)
+            seed = seed_intrinsics_per_cam.get(cam_id, None)
+            if not cam.initGeometryFromObservations(observations, seed_intrinsics=seed):
                 raise RuntimeError("Could not initialize the intrinsics for camera with topic: {0}. Try to use --verbose and check whether the calibration target extraction is successful.".format(topic))
             
             print("\tProjection initialized to: %s" % cam.geometry.projection().getParameters().flatten())

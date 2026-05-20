@@ -9,7 +9,7 @@
 #include <Eigen/Dense>
 
 // interpolate points instead of using homography
-#define INTERPOLATE
+// #define INTERPOLATE
 // use stable version of homography recover (opencv, includes refinement step)
 #define STABLE_H
 
